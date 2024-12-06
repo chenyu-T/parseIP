@@ -1,147 +1,87 @@
-#ifdef _WIN32_WINNT
-#undef _WIN32_WINNT
-#endif
-#define _WIN32_WINNT 0x0600
-#include <winsock2.h>
-#include <windows.h>
-#include <pcap.h>
-#include <cstdio>
 #include <cstdint>
-#include <cstring>
-#include <string>
+#include <WinSock2.h>
+#include <Iphlpapi.h>
+#include <iostream>
+#include <ws2tcpip.h>
 
-// å®šä¹‰ä»¥å¤ªç½‘å¤´éƒ¨
-struct ether_header {
-    uint8_t ether_dhost[6]; // ç›®æ ‡MACåœ°å€
-    uint8_t ether_shost[6]; // æºMACåœ°å€
-    uint16_t ether_type;    // ä»¥å¤ªç½‘ç±»å‹
-};
-
-// å®šä¹‰IPå¤´éƒ¨
-struct ip_header {
-    uint8_t ip_header_len : 4; // IPå¤´éƒ¨é•¿åº¦
-    uint8_t ip_version : 4;    // IPç‰ˆæœ¬
-    uint8_t ip_tos;            // æœåŠ¡ç±»å‹
-    uint16_t ip_total_length;  // æ€»é•¿åº¦
-    uint16_t ip_id;            // æ ‡è¯†ç¬¦
-    uint16_t ip_frag_offset;   // åˆ†ç‰‡åç§»
-    uint8_t ip_ttl;            // ç”Ÿå­˜æ—¶é—´
-    uint8_t ip_protocol;       // åè®®
-    uint16_t ip_checksum;      // æ ¡éªŒå’Œ
-    uint32_t ip_src;           // æºIPåœ°å€
-    uint32_t ip_dst;           // ç›®æ ‡IPåœ°å€
-};
-
-// å®šä¹‰ä»¥å¤ªç½‘ç±»å‹
-#define ETHERTYPE_IP 0x0800 // IP åè®®ç±»å‹
-
-// CIDR åœ°å€è§£æ
-void parse_cidr(const char* cidr, uint32_t* network, uint32_t* mask) {
-    char ip[INET_ADDRSTRLEN];
-    int prefix_len;
-
-    // åˆ†å‰²IPåœ°å€å’Œå‰ç¼€é•¿åº¦
-    sscanf(cidr, "%[^/]/%d", ip, &prefix_len);
-
-    // è½¬æ¢IPåœ°å€ä¸ºæ•´æ•°
-    struct in_addr addr;
-    inet_pton(AF_INET, ip, &addr);
-    *network = ntohl(addr.s_addr);
-
-    // ç”Ÿæˆå­ç½‘æ©ç 
-    *mask = (0xFFFFFFFF << (32 - prefix_len)) & 0xFFFFFFFF;
+struct in_addr addr;
+// ½« IP µØÖ·×Ö·û´®×ª»»Îª 32 Î»ÕûÊı
+uint32_t ip2Int(const std::string ip) {
+    if (inet_pton(AF_INET, ip.c_str(), &addr) != 1) {
+        std::cerr << "Invalid IP address: " << ip << std::endl;
+        return 0;
+    }
+    // ×ª»»ÎªÖ÷»ú×Ö½ÚĞò
+    return ntohl(addr.s_addr);
 }
 
-// æ£€æŸ¥IPæ˜¯å¦å±äºç»™å®šå­ç½‘
-int is_ip_in_subnet(uint32_t ip, uint32_t network, uint32_t mask) {
-    return (ip & mask) == (network & mask);
+// ¼ì²é IP ÊÇ·ñÊôÓÚ CIDR µØÖ·¿é
+bool ip_in_cidr(const std::string ip, const std::string cidr) {
+    size_t pos = cidr.find('/');
+    std::string cidr_ip_str = cidr.substr(0, pos);
+    int netmask_len = std::stoi(cidr.substr(pos + 1));
+
+    // ½«IPµØÖ·×ª»»Îª32Î»ÕûÊı
+    uint32_t ip_value = ip2Int(ip);
+    // ½«CIDRÍøÂçµØÖ·×ª»»Îª32Î»ÕûÊı
+    uint32_t cidr_ip_value = ip2Int(cidr_ip_str);
+
+    // ¼ÆËã×ÓÍøÑÚÂë£¨CIDR×ÓÍø³¤¶È£©
+    uint32_t ip_mask = (0xFFFFFFFF << (32 - netmask_len)) & 0xFFFFFFFF;
+
+    // ¼ì²éIPÊÇ·ñÔÚCIDRµØÖ·¿éÄÚ
+    return (ip_value & ip_mask) == (cidr_ip_value & ip_mask);
 }
 
-// æ‰“å°IPåœ°å€
-void print_ip(uint32_t ip) {
-    struct in_addr addr;
-    addr.s_addr = htonl(ip);
-    printf("%s\n", inet_ntoa(addr));
-}
-
-// å¤„ç†æ•°æ®åŒ…
-void process_packet(const uint8_t* packet, uint32_t network, uint32_t mask) {
-    struct ether_header* eth_hdr = (struct ether_header*)packet;
-
-    // ä»…å¤„ç†IPåŒ…
-    if (ntohs(eth_hdr->ether_type) == ETHERTYPE_IP) {
-        struct ip_header* ip_hdr = (struct ip_header*)(packet + sizeof(struct ether_header));
-
-        // è·å–æºIPåœ°å€
-        uint32_t src_ip = ntohl(ip_hdr->ip_src);
-
-        // æ£€æŸ¥æºIPæ˜¯å¦å±äºå­ç½‘
-        if (is_ip_in_subnet(src_ip, network, mask)) {
-            printf("Device IP in subnet: ");
-            print_ip(src_ip);
+std::string GetIPv4(std::string cidr) {
+    //PIP_ADAPTER_INFO½á¹¹ÌåÖ¸Õë´æ´¢±¾»úÍø¿¨ĞÅÏ¢
+    PIP_ADAPTER_INFO pIpAdapterInfo = new IP_ADAPTER_INFO();
+    //µÃµ½½á¹¹Ìå´óĞ¡,ÓÃÓÚGetAdaptersInfo²ÎÊı
+    unsigned long stSize = sizeof(IP_ADAPTER_INFO);
+    //µ÷ÓÃGetAdaptersInfoº¯Êı,Ìî³äpIpAdapterInfoÖ¸Õë±äÁ¿;ÆäÖĞstSize²ÎÊı¼ÈÊÇÒ»¸öÊäÈëÁ¿Ò²ÊÇÒ»¸öÊä³öÁ¿
+    int nRel = GetAdaptersInfo(pIpAdapterInfo, &stSize);
+    if (ERROR_BUFFER_OVERFLOW == nRel) {
+        //Èç¹ûº¯Êı·µ»ØµÄÊÇERROR_BUFFER_OVERFLOW
+        //ÔòËµÃ÷GetAdaptersInfo²ÎÊı´«µİµÄÄÚ´æ¿Õ¼ä²»¹»,Í¬Ê±Æä´«³östSize,±íÊ¾ĞèÒªµÄ¿Õ¼ä´óĞ¡
+        //ÕâÒ²ÊÇËµÃ÷ÎªÊ²Ã´stSize¼ÈÊÇÒ»¸öÊäÈëÁ¿Ò²ÊÇÒ»¸öÊä³öÁ¿
+        //ÊÍ·ÅÔ­À´µÄÄÚ´æ¿Õ¼ä
+        delete pIpAdapterInfo;
+        //ÖØĞÂÉêÇëÄÚ´æ¿Õ¼äÓÃÀ´´æ´¢ËùÓĞÍø¿¨ĞÅÏ¢
+        pIpAdapterInfo = (PIP_ADAPTER_INFO) new BYTE[stSize];
+        //ÔÙ´Îµ÷ÓÃGetAdaptersInfoº¯Êı,Ìî³äpIpAdapterInfoÖ¸Õë±äÁ¿
+        nRel = GetAdaptersInfo(pIpAdapterInfo, &stSize);
+    }
+    if (ERROR_SUCCESS == nRel) {
+        //Êä³öÍø¿¨ĞÅÏ¢
+        //¿ÉÄÜÓĞ¶àÍø¿¨,Òò´ËÍ¨¹ıÑ­»·È¥ÅĞ¶Ï
+        std::string ip;
+        while (pIpAdapterInfo) {
+            IP_ADDR_STRING *pIpAddrString = &(pIpAdapterInfo->IpAddressList);
+            do {
+                ip = pIpAddrString->IpAddress.String;
+                if(ip_in_cidr(ip,cidr)) {
+                    return ip;
+                }
+                pIpAddrString = pIpAddrString->Next;
+            } while (pIpAddrString);
+            pIpAdapterInfo = pIpAdapterInfo->Next;
         }
     }
+    //ÊÍ·ÅÄÚ´æ¿Õ¼ä
+    if (pIpAdapterInfo) {
+        delete pIpAdapterInfo;
+    }
+    return "";
 }
 
 int main() {
-    // å®šä¹‰CIDRåœ°å€å—ï¼Œä¸å†é€šè¿‡å‘½ä»¤è¡Œä¼ å‚ 169.254.189.90
-    std::string cidr = "";  // è¿™é‡Œå®šä¹‰ä¸€ä¸ªå…·ä½“çš„CIDRåœ°å€å—
-
-    char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_if_t* dev_list;
-    pcap_t* handle;
-
-    // åˆå§‹åŒ–Winsock
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        fprintf(stderr, "WSAStartup failed\n");
-        return -1;
+    //×¥È¡±¾»úËùÓĞIP£¬É¸Ñ¡cidr·¶Î§ÄÚµÄÄ¿±ê
+    std::string ip= GetIPv4("192.168.1.43/24");
+    if(ip!="") {
+        std::cout<<ip<<std::endl;
     }
-
-    // è§£æCIDRåœ°å€å—
-    uint32_t network, mask;
-    parse_cidr(cidr.c_str(), &network, &mask);
-
-    // è·å–æ‰€æœ‰è®¾å¤‡
-    if (pcap_findalldevs(&dev_list, errbuf) == -1) {
-        fprintf(stderr, "Error in pcap_findalldevs: %s\n", errbuf);
-        WSACleanup();
-        return -1;
+    else {
+        std::cout<<"error: can not get ip."<<std::endl;
     }
-
-    // é€‰æ‹©ç¬¬ä¸€ä¸ªç½‘ç»œæ¥å£
-    pcap_if_t* dev = dev_list;
-    if (dev == nullptr) {
-        fprintf(stderr, "No devices found\n");
-        WSACleanup();
-        return -1;
-    }
-
-    // æ‰“å¼€ç½‘ç»œè®¾å¤‡
-    handle = pcap_open_live(dev->name, BUFSIZ, 1, 1000, errbuf);
-    if (handle == nullptr) {
-        fprintf(stderr, "Error opening device %s: %s\n", dev->name, errbuf);
-        WSACleanup();
-        return -1;
-    }
-
-    printf("Listening for packets on device: %s\n", dev->name);
-
-    // æ•è·æ•°æ®åŒ…å¹¶å¤„ç†
-    while (true) {
-        struct pcap_pkthdr header;
-        const uint8_t* packet = pcap_next(handle, &header);
-        if (packet == nullptr) {
-            continue;
-        }
-
-        // å¤„ç†IPæ•°æ®åŒ…
-        process_packet(packet, network, mask);
-    }
-
-    // æ¸…ç†
-    pcap_close(handle);
-    WSACleanup();
-
     return 0;
 }
